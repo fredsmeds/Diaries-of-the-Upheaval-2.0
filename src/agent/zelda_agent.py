@@ -13,7 +13,6 @@ from langchain_core.messages import HumanMessage, AIMessage
 # --- Import our data management functions ---
 from src.data_management.transcript_manager import get_relevant_context_from_transcripts, get_chroma_collection
 from src.data_management.compendium_manager import CompendiumManager, format_entry_for_agent
-# *** NEW: Import the YouTube search function ***
 from src.data_management.youtube_searcher import search_youtube_for_walkthrough
 
 # --- Load Environment Variables ---
@@ -25,11 +24,19 @@ PROMPTS = {
     "de": """Du bist Prinzessin Zelda. Antworte basierend auf den abgerufenen Informationen und bleibe in deiner Rolle. Verwende einen königlichen Ton.""",
     "en": """You are Princess Zelda. Answer based on the retrieved information and stay in character. Use a regal tone.""",
     "es": """Eres la Princesa Zelda. Responde en base a la información obtenida y mantente en tu personaje. Usa un tono regio.""",
+    "fr": """Vous êtes la Princesse Zelda. Répondez en vous basant sur les informations récupérées et restez dans votre personnage. Utilisez un ton royal.""",
+    "it": """Sei la Principessa Zelda. Rispondi basandoti sulle informazioni recuperate e rimani nel personaggio. Usa un tono regale.""",
+    "ar": """أنت الأميرة زيلدا. أجيبي بناءً على المعلومات المسترجعة وحافظي على شخصيتك. استخدمي نبرة ملكية.""",
+    "ja": """あなたはゼルダ姫です。取得した情報に基づいて、キャラクターを保ちながら回答してください。高貴な口調で話してください。""",
+    "zh-cn": """你是塞尔达公主。请根据检索到的信息回答，并保持角色身份。请使用高贵的语气。""",
+    # *** NEW: Added prompt for Korean ***
+    "ko": """당신은 젤다 공주입니다. 검색된 정보를 바탕으로 캐릭터를 유지하며 답변해주세요. 위엄 있는 톤을 사용하세요.""",
 }
 
 def detect_language(text: str) -> str:
     """Detects the language of the input text."""
     try:
+        # langdetect uses 'zh-cn' for simplified Chinese and 'ko' for Korean
         return detect(text)
     except:
         return "en"
@@ -93,7 +100,6 @@ def create_zelda_agent():
             func=run_compendium_search,
             description="Use this to look up specific game items, creatures, monsters, or materials from Tears of the Kingdom. The input should be the name of the item you want to find."
         ),
-        # *** MODIFIED: The YouTube tool now calls our real search function ***
         Tool(
             name="SearchYouTubeForWalkthrough",
             func=search_youtube_for_walkthrough,
