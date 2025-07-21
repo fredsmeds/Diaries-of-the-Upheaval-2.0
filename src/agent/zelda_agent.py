@@ -8,10 +8,13 @@ from langchain_openai import ChatOpenAI
 from langchain.agents import AgentExecutor, create_openai_tools_agent
 from langchain_core.prompts import ChatPromptTemplate, MessagesPlaceholder
 from langchain.tools import Tool
-from langchain.memory import ConversationBufferMemory
+from langchain_core.messages import HumanMessage, AIMessage
 
-# Import our data management functions
+# --- Import our data management functions ---
 from src.data_management.transcript_manager import get_relevant_context_from_transcripts, get_chroma_collection
+from src.data_management.compendium_manager import CompendiumManager, format_entry_for_agent
+# *** NEW: Import the YouTube search function ***
+from src.data_management.youtube_searcher import search_youtube_for_walkthrough
 
 # --- Load Environment Variables ---
 load_dotenv()
@@ -35,23 +38,24 @@ def get_base_prompt(language_code: str) -> str:
     """Gets the base persona prompt for a given language."""
     return PROMPTS.get(language_code, PROMPTS["en"])
 
-# *** NEW: Simplified Prompt for Tool-Calling Agent ***
-# The complex ReAct formatting is no longer needed. We create a chat-style prompt.
 AGENT_PROMPT_TEMPLATE = ChatPromptTemplate.from_messages(
     [
         ("system", 
          """{base_prompt}
 
          **CRITICAL INSTRUCTIONS for your persona and responses:**
-         - You must answer based *strictly* on the knowledge retrieved from your tools. Do not use any external knowledge.
+         - You MUST use a tool to find information to answer the user's question. Do not answer from your own knowledge. If you cannot find the answer using your tools, say so.
+         - You must answer based *strictly* on the knowledge retrieved from your tools (the "Observation").
          - When referring to yourself, Princess Zelda, use the first person ("I", "my").
          - Avoid mentioning the real world. Refer to "The Legend of Zelda" or "Tears of the Kingdom" as "this era" or "the events of the upheaval."
          - Frame knowledge from "Breath of the Wild" as a "distant memory" if the tool provides that context.
-         - For walkthrough questions ("how do I solve..."), your first response should be to gently encourage the user. Only if they insist should you use the tool to find a video link.
+         - *** Walkthrough Persona Logic ***
+         - If the user asks for a walkthrough (e.g., "how do I solve", "how do I beat"), your FIRST response should be to gently encourage them. DO NOT use a tool. Say something like: "The path of the hero is one of discovery. I encourage you to face this challenge with courage. However, if you truly require my guidance, please ask again."
+         - Only if the user insists or asks a second time for the same walkthrough should you use the "SearchYouTubeForWalkthrough" tool.
          - Give detailed answers, mentioning characters and context from the information you've found.
          - Speak with reverence for the history of Hyrule.
          """),
-        MessagesPlaceholder(variable_name="chat_history", optional=True),
+        MessagesPlaceholder(variable_name="chat_history"),
         ("human", "{input}"),
         MessagesPlaceholder(variable_name="agent_scratchpad"),
     ]
@@ -67,7 +71,16 @@ def create_zelda_agent():
     print("Initializing Princess Zelda Agent...")
 
     llm = ChatOpenAI(model="gpt-4o-mini", temperature=0.7)
+    
+    print("Loading knowledge bases...")
     lore_collection = get_chroma_collection()
+    compendium_manager = CompendiumManager()
+    print("Knowledge bases loaded.")
+
+    def run_compendium_search(query: str) -> str:
+        print(f"--> Compendium Tool called with query: '{query}'")
+        entry = compendium_manager.find_entry(query)
+        return format_entry_for_agent(entry)
 
     tools = [
         Tool(
@@ -77,26 +90,22 @@ def create_zelda_agent():
         ),
         Tool(
             name="SearchGameGuideCompendium",
-            func=lambda query: "This information is not in my current knowledge. I can only speak to the lore and history I have access to.",
-            description="Use this to look up specific game items, creatures, monsters, or materials from Tears of the Kingdom."
+            func=run_compendium_search,
+            description="Use this to look up specific game items, creatures, monsters, or materials from Tears of the Kingdom. The input should be the name of the item you want to find."
         ),
+        # *** MODIFIED: The YouTube tool now calls our real search function ***
         Tool(
             name="SearchYouTubeForWalkthrough",
-            func=lambda query: "I cannot provide a direct link, but I encourage you to seek out moving pictures of other adventurers on the platform known as YouTube for guidance on this quest.",
-            description="Use this ONLY when a user insists on getting help for a specific shrine or mission walkthrough."
+            func=search_youtube_for_walkthrough,
+            description="Use this tool ONLY when a user insists or asks a second time for help with a specific shrine, mission, or boss walkthrough."
         ),
     ]
 
-    # *** NEW: Use create_openai_tools_agent for a more reliable agent ***
     agent = create_openai_tools_agent(llm, tools, AGENT_PROMPT_TEMPLATE)
     
-    # Re-enable memory, as tool-calling agents handle it better.
-    memory = ConversationBufferMemory(memory_key="chat_history", return_messages=True)
-
     agent_executor = AgentExecutor(
         agent=agent,
         tools=tools,
-        memory=memory, 
         verbose=True,
         handle_parsing_errors=True,
         max_iterations=5,
@@ -112,7 +121,6 @@ if __name__ == '__main__':
     print("\n--- Testing Agent ---")
     print("Agent is ready. Type 'quit' to exit.")
     
-    # We need to maintain the chat history for the test loop
     chat_history = []
 
     while True:
@@ -123,14 +131,13 @@ if __name__ == '__main__':
         lang_code = detect_language(user_input)
         base_prompt_text = get_base_prompt(lang_code)
         
-        # *** MODIFIED: The invoke call is now simpler ***
         response = zelda_agent_executor.invoke({
             "input": user_input,
             "base_prompt": base_prompt_text,
             "chat_history": chat_history,
         })
         
-        # Update the history with the latest interaction
-        chat_history.extend(response['chat_history'])
+        chat_history.append(HumanMessage(content=user_input))
+        chat_history.append(AIMessage(content=response['output']))
         
         print(f"\nPrincess Zelda: {response['output']}\n")
