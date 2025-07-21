@@ -1,17 +1,20 @@
 # src/data_management/transcript_manager.py
 
 import os
+import re
 import time
+import xml.etree.ElementTree as ET
 import chromadb
 import openai
 from openai import OpenAI
+from youtube_transcript_api import YouTubeTranscriptApi, TranscriptsDisabled
+from dotenv import load_dotenv
+
+# --- Load Environment Variables ---
+load_dotenv()
 
 # --- Initialization ---
-# It's good practice to initialize the client once. This code assumes that
-# load_dotenv() has been called elsewhere (e.g., in app.py or a config module)
-# so that os.getenv() can access the API key.
 try:
-    # This uses the OPENAI_API_KEY environment variable by default.
     client = OpenAI()
 except openai.OpenAIError as e:
     print(f"Error initializing OpenAI client: {e}")
@@ -26,24 +29,55 @@ def truncate_text(text: str, max_tokens: int = 4000) -> str:
         return " ".join(words[:max_tokens])
     return text
 
+def split_text_into_chunks(text: str, max_words: int = 300, overlap: int = 50) -> list[str]:
+    """
+    Splits a long text into smaller, overlapping chunks based on word count.
+    """
+    words = re.split(r'\s+', text)
+    if not words:
+        return []
+
+    chunks = []
+    start = 0
+    while start < len(words):
+        end = start + max_words
+        chunk_words = words[start:end]
+        chunks.append(" ".join(chunk_words))
+        
+        if end >= len(words):
+            break
+        start += (max_words - overlap)
+        
+    return chunks
+
+def get_transcript(video_id: str) -> str | None:
+    """
+    Fetches the English transcript for a given YouTube video ID.
+    *** MODIFIED: Removed the http_client argument for a final test. ***
+    """
+    try:
+        # Calling the library in the simplest possible way.
+        transcript_list = YouTubeTranscriptApi.get_transcript(video_id, languages=['en', 'en-GB'])
+        transcript_text = " ".join([item['text'] for item in transcript_list])
+        return re.sub(r'\s+', ' ', transcript_text).strip()
+    except TranscriptsDisabled:
+        print(f"Warning: Transcripts are disabled for video {video_id}. Skipping.")
+        return None
+    except Exception as e:
+        # This will catch the "no element found" error if it still exists.
+        print(f"An unexpected error occurred retrieving transcript for video {video_id}: {e}")
+        return None
+
 # --- ChromaDB Management Functions ---
 
 def get_chroma_collection(
     collection_name: str = "totk_transcripts",
-    db_path: str = "data/chroma_db"  # Specify a path for persistent storage
+    db_path: str = "data/chroma_db"
 ) -> chromadb.Collection | None:
     """
     Initializes a persistent ChromaDB client and returns the specified collection.
-    
-    Args:
-        collection_name: The name of the collection to get or create.
-        db_path: The directory path to store the database files.
-
-    Returns:
-        A ChromaDB Collection object, or None if an error occurs.
     """
     try:
-        # Using PersistentClient to save the database to disk
         chroma_client_instance = chromadb.PersistentClient(path=db_path)
         collection = chroma_client_instance.get_or_create_collection(name=collection_name)
         print(f"ChromaDB collection '{collection_name}' accessed/created. Documents: {collection.count()}")
@@ -51,6 +85,59 @@ def get_chroma_collection(
     except Exception as e:
         print(f"Error initializing ChromaDB at path '{db_path}': {e}")
         return None
+
+def populate_collection_with_transcripts(
+    collection: chromadb.Collection,
+    video_ids: list[str]
+):
+    """
+    Fetches transcripts, creates embeddings, and stores them in ChromaDB.
+    """
+    if not client:
+        print("Error: OpenAI client not initialized. Cannot populate database.")
+        return
+
+    print(f"\nProcessing {len(video_ids)} videos for embedding...")
+    for video_id in video_ids:
+        print(f"  - Fetching transcript for video: {video_id}")
+        transcript = get_transcript(video_id)
+        if not transcript:
+            continue
+
+        print(f"  - Splitting transcript into chunks...")
+        chunks = split_text_into_chunks(transcript)
+        
+        if not chunks:
+            print(f"  - No chunks generated for video {video_id}. Skipping.")
+            continue
+
+        print(f"  - Generating and storing {len(chunks)} embeddings for video {video_id}...")
+        for i, chunk in enumerate(chunks):
+            chunk_id = f"{video_id}_chunk_{i}"
+            
+            if collection.get(ids=[chunk_id])['ids']:
+                continue
+
+            try:
+                embedding_response = client.embeddings.create(
+                    input=[chunk],
+                    model="text-embedding-ada-002"
+                )
+                embedding = embedding_response.data[0].embedding
+
+                collection.add(
+                    ids=[chunk_id],
+                    embeddings=[embedding],
+                    documents=[chunk],
+                    metadatas=[{'video_id': video_id, 'source_type': 'transcript'}]
+                )
+            except openai.OpenAIError as e:
+                print(f"    - OpenAI API error for chunk {chunk_id}: {e}")
+            except Exception as e:
+                print(f"    - An unexpected error occurred for chunk {chunk_id}: {e}")
+    
+    print("\nFinished processing all videos.")
+    print(f"Total documents in collection: {collection.count()}")
 
 
 def get_relevant_context_from_transcripts(
@@ -60,26 +147,13 @@ def get_relevant_context_from_transcripts(
     max_total_tokens: int = 4000
 ) -> str:
     """
-    Processes a user query to retrieve contextually related information from ChromaDB
-    using optimized querying and modern OpenAI v1.x embeddings.
-
-    This function replaces the old, inefficient `multi_query_processing`.
-
-    Args:
-        user_query: The user's original question.
-        collection: The ChromaDB collection object to query.
-        n_results_per_query: The number of results to fetch for each sub-query.
-        max_total_tokens: The maximum number of tokens for the final context string.
-
-    Returns:
-        A single string containing the combined, relevant context.
+    Processes a user query to retrieve contextually related information from ChromaDB.
     """
     if not client:
         return "Error: OpenAI client not initialized. Cannot generate embeddings."
     if not collection:
         return "Error: ChromaDB collection not available."
 
-    # The multi-query expansion strategy is preserved to get rich context
     related_queries = [
         user_query,
         f"Background information on {user_query}",
@@ -87,70 +161,58 @@ def get_relevant_context_from_transcripts(
         f"Key events related to {user_query} in Hyrule's history",
     ]
     
-    # Use a set to automatically handle duplicate chunks of text
     all_retrieved_texts_set = set()
 
     for sub_query in related_queries:
         try:
-            # 1. Refactored OpenAI Embedding Call (v1.x syntax)
             query_embedding_response = client.embeddings.create(
-                input=[sub_query],
-                model="text-embedding-ada-002"
+                input=[sub_query], model="text-embedding-ada-002"
             )
             query_embedding = query_embedding_response.data[0].embedding
 
-            # 2. OPTIMIZED ChromaDB Query
-            # This is the core improvement. We use collection.query() to let ChromaDB
-            # perform the efficient similarity search on the server/file side.
-            # We no longer fetch the entire database with collection.get().
             results = collection.query(
                 query_embeddings=[query_embedding],
                 n_results=n_results_per_query,
-                include=['documents']  # We only need the document text for the context
+                include=['documents']
             )
 
-            # 3. Extract the document texts from the results
             if results['documents'] and len(results['documents']) > 0:
-                # results['documents'] is a list containing one list of results
                 for doc in results['documents'][0]:
                     all_retrieved_texts_set.add(doc)
             
-            # A small delay can be polite to APIs, but may not be strictly necessary here
             time.sleep(0.1)
 
         except openai.OpenAIError as e:
-            print(f"OpenAI API error during embedding for sub-query '{sub_query}': {e}")
-            continue  # Skip this sub-query on error
+            print(f"OpenAI API error for sub-query '{sub_query}': {e}")
+            continue
         except Exception as e:
             print(f"Error processing sub-query '{sub_query}': {e}")
             continue
 
-    # 4. Combine unique texts and truncate to the desired length
     combined_context = " ".join(list(all_retrieved_texts_set))
-    
     return truncate_text(combined_context, max_tokens=max_total_tokens)
 
-# --- Example Usage (for testing this module directly) ---
-if __name__ == '__main__':
-    # This block will only run when you execute this file directly
-    # e.g., `python src/data_management/transcript_manager.py`
-    
-    # You would need to make sure your .env file is loaded.
-    # For direct testing, you might add:
-    from dotenv import load_dotenv
-    load_dotenv()
 
-    print("--- Testing ChromaDB Manager ---")
+# --- Main Execution Block (for setup and testing) ---
+if __name__ == '__main__':
+    print("--- Running Transcript Manager for Setup & Testing ---")
     
-    # Step 1: Get the collection
-    # Note: You need to have data IN the collection for queries to work.
-    # You would first run a script to populate it with transcript embeddings.
+    video_ids_to_process = [
+        'hZytp1sIZAw', 'qP1Fw2EpwqE', 'JuhBs44odO0', 'w31M0LoVUO8',
+        'vad1wAe5mB4', 'Q1mRVn0WCrU', 'UhkwrgasKlU',
+    ]
+    
     lore_collection = get_chroma_collection()
 
     if lore_collection:
-        # Step 2: Test the context retrieval function
-        test_query = "What happened to the Zonai?"
-        print(f"\nTesting with query: '{test_query}'")
+        populate_collection_with_transcripts(
+            collection=lore_collection,
+            video_ids=video_ids_to_process
+        )
+        
+        print("\n--- Testing Context Retrieval ---")
+        test_query = "What is draconification?"
+        print(f"Query: '{test_query}'")
         
         context = get_relevant_context_from_transcripts(
             user_query=test_query,
@@ -159,9 +221,9 @@ if __name__ == '__main__':
         
         print("\n--- Retrieved Context ---")
         if context:
-            print(context)
+            print(context[:500] + "...")
             print(f"\nContext length: {len(context.split())} words")
         else:
-            print("No context was retrieved. Is the database populated?")
+            print("No context was retrieved.")
     else:
-        print("Could not initialize ChromaDB collection. Test aborted.")
+        print("Could not initialize ChromaDB collection. Process aborted.")
