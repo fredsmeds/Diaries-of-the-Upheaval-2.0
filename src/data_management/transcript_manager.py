@@ -53,10 +53,8 @@ def split_text_into_chunks(text: str, max_words: int = 300, overlap: int = 50) -
 def get_transcript(video_id: str) -> str | None:
     """
     Fetches the English transcript for a given YouTube video ID.
-    *** MODIFIED: Removed the http_client argument for a final test. ***
     """
     try:
-        # Calling the library in the simplest possible way.
         transcript_list = YouTubeTranscriptApi.get_transcript(video_id, languages=['en', 'en-GB'])
         transcript_text = " ".join([item['text'] for item in transcript_list])
         return re.sub(r'\s+', ' ', transcript_text).strip()
@@ -64,7 +62,6 @@ def get_transcript(video_id: str) -> str | None:
         print(f"Warning: Transcripts are disabled for video {video_id}. Skipping.")
         return None
     except Exception as e:
-        # This will catch the "no element found" error if it still exists.
         print(f"An unexpected error occurred retrieving transcript for video {video_id}: {e}")
         return None
 
@@ -88,16 +85,17 @@ def get_chroma_collection(
 
 def populate_collection_with_transcripts(
     collection: chromadb.Collection,
-    video_ids: list[str]
+    video_ids: list[str],
+    era: str  # *** NEW: Added 'era' parameter to tag the data ***
 ):
     """
-    Fetches transcripts, creates embeddings, and stores them in ChromaDB.
+    Fetches transcripts, creates embeddings, and stores them in ChromaDB with an 'era' tag.
     """
     if not client:
-        print("Error: OpenAI client not initialized. Cannot populate database.")
+        print(f"Error: OpenAI client not initialized. Cannot populate database for era '{era}'.")
         return
 
-    print(f"\nProcessing {len(video_ids)} videos for embedding...")
+    print(f"\nProcessing {len(video_ids)} videos for era: '{era}'...")
     for video_id in video_ids:
         print(f"  - Fetching transcript for video: {video_id}")
         transcript = get_transcript(video_id)
@@ -125,19 +123,19 @@ def populate_collection_with_transcripts(
                 )
                 embedding = embedding_response.data[0].embedding
 
+                # *** MODIFIED: Added the 'era' to the metadata ***
                 collection.add(
                     ids=[chunk_id],
                     embeddings=[embedding],
                     documents=[chunk],
-                    metadatas=[{'video_id': video_id, 'source_type': 'transcript'}]
+                    metadatas=[{'video_id': video_id, 'source_type': 'transcript', 'era': era}]
                 )
             except openai.OpenAIError as e:
                 print(f"    - OpenAI API error for chunk {chunk_id}: {e}")
             except Exception as e:
                 print(f"    - An unexpected error occurred for chunk {chunk_id}: {e}")
     
-    print("\nFinished processing all videos.")
-    print(f"Total documents in collection: {collection.count()}")
+    print(f"\nFinished processing videos for era: '{era}'.")
 
 
 def get_relevant_context_from_transcripts(
@@ -149,6 +147,8 @@ def get_relevant_context_from_transcripts(
     """
     Processes a user query to retrieve contextually related information from ChromaDB.
     """
+    # This function remains unchanged as it retrieves context regardless of era.
+    # The agent will be responsible for interpreting the 'era' metadata later.
     if not client:
         return "Error: OpenAI client not initialized. Cannot generate embeddings."
     if not collection:
@@ -173,7 +173,7 @@ def get_relevant_context_from_transcripts(
             results = collection.query(
                 query_embeddings=[query_embedding],
                 n_results=n_results_per_query,
-                include=['documents']
+                include=['documents'] # We could also include metadatas to check the 'era'
             )
 
             if results['documents'] and len(results['documents']) > 0:
@@ -197,21 +197,38 @@ def get_relevant_context_from_transcripts(
 if __name__ == '__main__':
     print("--- Running Transcript Manager for Setup & Testing ---")
     
-    video_ids_to_process = [
+    # *** MODIFIED: Separated video IDs by era ***
+    totk_video_ids = [
         'hZytp1sIZAw', 'qP1Fw2EpwqE', 'JuhBs44odO0', 'w31M0LoVUO8',
         'vad1wAe5mB4', 'Q1mRVn0WCrU', 'UhkwrgasKlU',
+    ]
+    
+    botw_video_ids = [
+        'PawTU9Dip2Q', 'lXSbXkw1ULo', 'v6kZXxuTLWU', 'nfw6Yz40NAw',
     ]
     
     lore_collection = get_chroma_collection()
 
     if lore_collection:
+        # Step 1: Populate with TOTK ("current era") transcripts
         populate_collection_with_transcripts(
             collection=lore_collection,
-            video_ids=video_ids_to_process
+            video_ids=totk_video_ids,
+            era="totk"  # Tagging this data as Tears of the Kingdom
         )
         
+        # Step 2: Populate with BOTW ("distant memory") transcripts
+        populate_collection_with_transcripts(
+            collection=lore_collection,
+            video_ids=botw_video_ids,
+            era="botw"  # Tagging this data as Breath of the Wild
+        )
+
+        print(f"\nDatabase population complete. Total documents in collection: {lore_collection.count()}")
+        
+        # Step 3: Test the context retrieval function
         print("\n--- Testing Context Retrieval ---")
-        test_query = "What is draconification?"
+        test_query = "What happened to the champions?" # A question more related to BOTW
         print(f"Query: '{test_query}'")
         
         context = get_relevant_context_from_transcripts(
