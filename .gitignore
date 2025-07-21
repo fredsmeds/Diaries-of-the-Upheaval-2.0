@@ -73,7 +73,7 @@ Thumbs.db
 # Adjust these based on your actual local data storage strategy
 #
 # Compendium data downloaded from BustyBee (likely large)
-data/compendium/
+#data/compendium/
 #
 # Cached/processed transcripts if stored as intermediate files
 data/transcripts_cache/
