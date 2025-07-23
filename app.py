@@ -2,7 +2,8 @@
 
 import os
 import tempfile
-import traceback # Import traceback to get detailed error info
+import re # <-- Import the regular expression module
+import traceback
 from flask import Flask, request, jsonify, send_from_directory, send_file
 from flask_cors import CORS
 from dotenv import load_dotenv
@@ -68,22 +69,26 @@ def chat():
             "chat_history": langchain_history,
         })
         
-        ai_response = response['output']
+        ai_response_raw = response['output']
+        
+        # Clean the response for the UI by removing the tags
+        ai_response_for_ui = ai_response_raw.replace("|||SPEAK|||", "").replace("|||NOSPEAK|||", "")
 
         updated_history = incoming_history + [
             {'type': 'human', 'content': user_input},
-            {'type': 'ai', 'content': ai_response}
+            {'type': 'ai', 'content': ai_response_for_ui} # Use the cleaned response for history
         ]
 
-        print(f"Agent responded to /chat: {ai_response[:50]}...")
+        print(f"Agent responded to /chat: {ai_response_for_ui[:50]}...")
         return jsonify({
-            "output": ai_response,
+            # Send the raw response with tags to the frontend
+            "output": ai_response_raw, 
             "chat_history": updated_history
         })
 
     except Exception as e:
         print(f"An error occurred in /chat endpoint: {e}")
-        traceback.print_exc() # Print the full traceback
+        traceback.print_exc()
         return jsonify({"error": "An internal error occurred."}), 500
 
 @app.route('/transcribe', methods=['POST'])
@@ -101,74 +106,66 @@ def transcribe():
     
     temp_path = ""
     try:
-        # Use a temporary file to store the audio data
         with tempfile.NamedTemporaryFile(delete=False, suffix=".webm") as temp_audio:
             audio_file.save(temp_audio.name)
             temp_path = temp_audio.name
-            print(f"--> Saved temporary audio file to: {temp_path}")
-
-        # **MODIFIED CODE: Added a detailed try-except block here**
-        # This will catch the specific error during transcription
-        print("--> Attempting to transcribe audio...")
+        
         transcribed_text = transcribe_audio(temp_path)
-        print(f"--> Transcription result: '{transcribed_text}'")
 
         if transcribed_text and transcribed_text.strip():
-            print("--> Successfully transcribed audio.")
             return jsonify({"transcription": transcribed_text})
         else:
-            # This case is now more specific: transcription returned nothing.
-            print("--> Transcription resulted in empty text. No speech detected?")
             return jsonify({"error": "Failed to transcribe audio or no speech detected"}), 500
 
     except Exception as e:
-        # **MODIFIED CODE: This is the crucial new part**
-        # If any error happens above, it will be caught and printed here.
-        print("\n" + "="*50)
-        print("--> CRITICAL ERROR in /transcribe endpoint!")
-        print(f"--> Error Type: {type(e).__name__}")
-        print(f"--> Error Details: {e}")
-        traceback.print_exc() # This prints the full error stack trace
-        print("="*50 + "\n")
+        print(f"An error occurred in /transcribe endpoint: {e}")
+        traceback.print_exc()
         return jsonify({"error": f"An internal server error occurred during transcription: {e}"}), 500
 
     finally:
-        # Ensure the temporary file is always deleted
         if temp_path and os.path.exists(temp_path):
             os.remove(temp_path)
-            print(f"--> Cleaned up temporary file: {temp_path}")
-
 
 @app.route('/synthesize', methods=['POST'])
 def synthesize():
     """
     Receives text, converts it to speech, and returns the audio file.
+    This now handles special tags to control which parts of the text are spoken.
     """
     print("Received request for /synthesize endpoint")
-    try:
-        data = request.get_json()
-        text_to_speak = data.get('text')
+    data = request.get_json()
+    full_text = data.get('text')
 
-        if not text_to_speak:
-            return jsonify({"error": "No text provided"}), 400
+    if not full_text:
+        return jsonify({"error": "No text provided"}), 400
 
-        audio_file_path = generate_speech(text_to_speak)
+    # --- NEW LOGIC TO HANDLE SPEECH TAGS ---
+    text_to_speak = full_text
+    if "|||SPEAK|||" in full_text:
+        # Find all occurrences of the text between the SPEAK tags
+        speakable_parts = re.findall(r'\|\|\|SPEAK\|\|\|(.*?)\|\|\|NOSPEAK\|\|\|', full_text, re.DOTALL)
+        # Join them together with a space
+        text_to_speak = " ".join([part.strip() for part in speakable_parts])
+        print(f"--> Extracted speakable text: '{text_to_speak}'")
+    
+    if not text_to_speak.strip():
+        print("--> No speakable text found after processing tags, nothing to synthesize.")
+        return jsonify({"status": "no audio generated"}), 204 # 204 No Content
 
-        if audio_file_path:
-            print(f"--> Successfully generated speech file: {audio_file_path}")
-            return send_file(
-                audio_file_path,
-                mimetype="audio/mpeg",
-                as_attachment=True,
-                download_name="response.mp3"
-            )
-        else:
-            print("--> Failed to generate speech file.")
-            return jsonify({"error": "Failed to generate speech"}), 500
-    except Exception as e:
-        print(f"An error occurred in /synthesize endpoint: {e}")
-        traceback.print_exc()
-        return jsonify({"error": "An internal error occurred during synthesis."}), 500
+    audio_file_path = generate_speech(text_to_speak)
+
+    if audio_file_path:
+        print(f"--> Successfully generated speech file: {audio_file_path}")
+        return send_file(
+            audio_file_path,
+            mimetype="audio/mpeg",
+            as_attachment=True,
+            download_name="response.mp3"
+        )
+    else:
+        print("--> Failed to generate speech file.")
+        return jsonify({"error": "Failed to generate speech"}), 500
+
 
 # --- Main Execution Block ---
 if __name__ == '__main__':

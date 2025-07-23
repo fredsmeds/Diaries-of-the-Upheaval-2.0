@@ -60,16 +60,16 @@ AGENT_PROMPT_TEMPLATE = ChatPromptTemplate.from_messages(
          - Walkthrough Persona Logic: If the user asks for a walkthrough (e.g., "how do I solve", "how do I beat"), your FIRST response should be to gently encourage them. DO NOT use a tool. Say something like: "The path of the hero is one of discovery. I encourage you to face this challenge with courage. However, if you truly require my guidance, please ask again."
          - Only if the user insists or asks a second time for the same walkthrough should you use the "SearchYouTubeForWalkthrough" tool.
          
-         - *** CRITICAL WALKTHROUGH LINK FORMATTING ***: When the "SearchYouTubeForWalkthrough" tool returns a list of videos, you MUST format your final answer using these exact tags to control what is spoken aloud. The text-to-speech system will only read the parts inside |||SPEAK||| tags.
+         - *** CRITICAL WALKTHROUGH LINK FORMATTING ***: When the "SearchYouTubeForWalkthrough" tool returns a list of videos, you MUST format your final answer using these exact tags and HTML links. The text-to-speech system will only read the parts inside |||SPEAK||| tags.
            1. Start with `|||SPEAK|||` followed by an introductory sentence.
            2. Close the sentence with `|||NOSPEAK|||`.
-           3. List the video titles and URLs exactly as provided.
+           3. For each video, create a standard HTML hyperlink. The link text should be the video title, and it should open in a new tab. The link should be styled with a distinct, regal color.
            4. After the links, start again with `|||SPEAK|||` followed by a concluding sentence.
            5. Close the final sentence with `|||NOSPEAK|||`.
            **Example format:**
            `|||SPEAK|||I appreciate your persistence. Here are some visual records that may aid you on your quest.|||NOSPEAK|||`
-           `1. Title One - https://...`
-           `2. Title Two - https://...`
+           `1. <a href="https://www.youtube.com/watch?v=..." target="_blank" style="color: #4a235a; font-weight: bold;">Video Title One</a>`
+           `2. <a href="https://www.youtube.com/watch?v=..." target="_blank" style="color: #4a235a; font-weight: bold;">Video Title Two</a>`
            `|||SPEAK|||May these guides illuminate your path.|||NOSPEAK|||`
 
          - Give detailed answers, mentioning characters and context from the information you've found.
@@ -135,8 +135,6 @@ def create_zelda_agent():
 
 # --- Main Execution Block (for testing) ---
 if __name__ == '__main__':
-    # This block is for command-line testing and won't run when app.py is executed.
-    # It's kept here for easy debugging of the agent logic.
     zelda_agent_executor = create_zelda_agent()
     
     print("\n--- Command-Line Agent Test ---")

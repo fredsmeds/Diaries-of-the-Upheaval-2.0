@@ -5,7 +5,9 @@
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
     <title>Diaries of the Upheaval</title>
     <style>
-        @import url('https://fonts.googleapis.com/css2?family=Cinzel:wght@400;700&display=swap');
+        /* --- FONT IMPORT --- */
+        /* We are now importing both the original 'Cinzel' and the new 'Cinzel Decorative' */
+        @import url('https://fonts.googleapis.com/css2?family=Cinzel:wght@400;700&family=Cinzel+Decorative:wght@700&display=swap');
 
         :root {
             --zelda-gold: #FFE4B5;
@@ -17,6 +19,7 @@
 
         body {
             margin: 0;
+            /* The body and chat bubbles will still use the clean, readable font */
             font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif;
             color: white;
             display: flex;
@@ -47,14 +50,25 @@
         }
 
         .header h1 {
-            font-family: 'Cinzel', serif;
-            color: var(--zelda-gold);
-            text-shadow: 2px 2px 4px #000000;
+            /* --- FONT CHANGE --- */
+            /* The main title now uses the more ornate "Cinzel Decorative" font */
+            font-family: 'Cinzel Decorative', serif;
+            /* --- GOLD EFFECT --- */
+            /* Create a linear gradient for a gold effect */
+            background-image: linear-gradient(to right, #BF953F, #FCF6BA, #B38728, #FBF5B7, #AA771C);
+            /* Clip the background to the text */
+            -webkit-background-clip: text;
+            background-clip: text;
+            /* Make the text color transparent so the background shows through */
+            color: transparent;
+            text-shadow: 1px 1px 2px rgba(0,0,0,0.5);
             margin: 0;
             font-size: 2em;
         }
 
         .header p {
+            /* The subtitle uses the original, more readable 'Cinzel' */
+            font-family: 'Cinzel', serif;
             color: #E0E0E0;
             margin-top: 5px;
             font-size: 0.9em;
@@ -189,7 +203,8 @@
 <body>
 
     <div class="header">
-        <h1>👑 Diaries of the Upheaval</h1>
+        <!-- CROWN REMOVED FROM HERE -->
+        <h1>Diaries of the Upheaval</h1>
         <p>A Q&A guide to Hyrule, hosted by Princess Zelda</p>
     </div>
 
@@ -207,10 +222,6 @@
 
     <script>
         // --- CONFIGURATION ---
-        // ** THE FIX IS HERE **
-        // By setting the base URL to an empty string, the browser will automatically
-        // use the same host that served the page (e.g., http://192.168.1.71:5000).
-        // This makes it work on both your computer and your phone.
         const API_BASE_URL = '';
 
         // --- DOM ELEMENTS ---
@@ -224,7 +235,7 @@
         let isRecording = false;
         let mediaRecorder;
         let audioChunks = [];
-        let mediaStream; // To hold the microphone stream instance
+        let mediaStream;
 
         // --- UI FUNCTIONS ---
 
@@ -235,7 +246,10 @@
             if (sender === 'ai') {
                 bubble.classList.add('ai-bubble');
                 const textNode = document.createElement('p');
-                textNode.innerHTML = text.replace(/\n/g, '<br>');
+                
+                const cleanedTextForDisplay = text.replace(/\|\|\|SPEAK\|\|\|/g, "").replace(/\|\|\|NOSPEAK\|\|\|/g, "");
+                textNode.innerHTML = cleanedTextForDisplay.replace(/\n/g, '<br>');
+                
                 bubble.appendChild(textNode);
                 if (imageUrl) {
                     const img = document.createElement('img');
@@ -282,12 +296,12 @@
                 }
 
                 const data = await response.json();
-                const aiText = data.output;
+                const aiTextRaw = data.output;
                 
                 chatHistory = data.chat_history;
                 hideSpinner();
                 
-                let content = aiText;
+                let content = aiTextRaw;
                 let imageUrl = null;
                 if (content.includes("|||IMAGE_URL:")) {
                     const parts = content.split("|||IMAGE_URL:");
@@ -301,7 +315,7 @@
             } catch (error) {
                 console.error('Error getting agent response:', error);
                 hideSpinner();
-                addMessage('ai', 'My apologies, I seem to be having trouble connecting to the archives. Please check the browser console for details.');
+                addMessage('ai', 'My apologies, I seem to be having trouble connecting to the archives.');
             }
         }
 
@@ -313,6 +327,11 @@
                     body: JSON.stringify({ text: text }),
                 });
                 if (!response.ok) throw new Error('Speech synthesis failed.');
+                
+                if (response.status === 204) {
+                    console.log("Synthesize returned no content, skipping audio playback.");
+                    return;
+                }
                 
                 const audioBlob = await response.blob();
                 const audioUrl = URL.createObjectURL(audioBlob);
@@ -361,7 +380,7 @@
                 if(userBubbles.length > 0) {
                     userBubbles[userBubbles.length - 1].remove();
                 }
-                addMessage('ai', "I am sorry, I could not understand what you said. Please check the browser console for details.");
+                addMessage('ai', "I am sorry, I could not understand what you said.");
             } finally {
                 hideSpinner();
             }
