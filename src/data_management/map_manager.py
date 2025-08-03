@@ -2,151 +2,128 @@
 
 import os
 import json
-import tempfile
-from typing import List, Dict, Any, Optional
-from PIL import Image, ImageDraw
+from PIL import Image
+import glob
+import logging
+
+# --- Configuration ---
+logging.basicConfig(level=logging.INFO)
+BASE_DIR = os.path.abspath(os.path.join(os.path.dirname(__file__), '..', '..'))
+ASSETS_DIR = os.path.join(BASE_DIR, 'assets')
+DATA_DIR = os.path.join(BASE_DIR, 'data')
+ICON_DIR = os.path.join(ASSETS_DIR, 'icons')
+MAP_DATA_DIR = os.path.join(DATA_DIR, 'maps', 'source_json') 
+GENERATED_MAPS_DIR = os.path.join(BASE_DIR, 'generated_maps')
+os.makedirs(GENERATED_MAPS_DIR, exist_ok=True)
+
+# --- Constants ---
+MAP_SCALE = 3.5
+MAP_OFFSET_X = 10500
+MAP_OFFSET_Z = 10500
+CANVAS_WIDTH = 6000
+CANVAS_HEIGHT = 6000
 
 class MapManager:
-    """
-    Manages loading map data, searching for locations, and generating custom map images.
-    """
-    def __init__(self, 
-                 data_path: str = "data/maps/markers", 
-                 map_image_path: str = "assets/maps", 
-                 icon_path: str = "assets/icons"):
-        print("--- Initializing Map Manager ---")
-        self.data_path = data_path
-        self.map_image_path = map_image_path
-        self.icon_path = icon_path
-        self.region_bounds = {
-            "lanayru": {"x_min": 2800, "x_max": 4700, "y_min": -1200, "y_max": 1500, "layer": "surface"},
-            "central hyrule": {"x_min": -1500, "x_max": 1500, "y_min": -1500, "y_max": 1500, "layer": "surface"},
-            "hyrule castle": {"x_min": -500, "x_max": 200, "y_min": 500, "y_max": 1300, "layer": "surface"},
-            "hebra": {"x_min": -4500, "x_max": -1500, "y_min": 1500, "y_max": 4000, "layer": "surface"},
-            "gerudo": {"x_min": -4800, "x_max": -1800, "y_min": -3800, "y_max": -1500, "layer": "surface"},
-            "faron": {"x_min": 0, "x_max": 3000, "y_min": -4000, "y_max": -2000, "layer": "surface"},
-            "necluda": {"x_min": 1500, "x_max": 4000, "y_min": -3000, "y_max": -1000, "layer": "surface"},
-            "akkala": {"x_min": 3000, "x_max": 4800, "y_min": 1500, "y_max": 4000, "layer": "surface"},
-            "eldin": {"x_min": 1000, "x_max": 3000, "y_min": 1500, "y_max": 4000, "layer": "surface"},
-        }
-        self.locations_db = self._load_all_locations()
-        if self.locations_db:
-            print(f"--- Map Manager Initialized: Loaded {len(self.locations_db)} total locations. ---")
+    def __init__(self):
+        """
+        Initializes the MapManager by loading all map location data from the JSON files.
+        """
+        logging.info("--- Initializing MapManager (v3 - Final) ---")
+        self.locations = self._load_all_locations()
+        self.icons = self._load_icon_paths()
 
-    def _load_all_locations(self) -> List[Dict[str, Any]]:
-        all_locations = []
-        layers = ["surface", "sky", "depths"]
-        for layer in layers:
-            layer_path = os.path.join(self.data_path, layer)
-            if not os.path.isdir(layer_path): continue
-            
-            for filename in os.listdir(layer_path):
-                if filename.endswith(".json"):
-                    file_path = os.path.join(layer_path, filename)
-                    with open(file_path, 'r', encoding='utf-8') as f:
-                        data = json.load(f)
-                        for category_data in data:
-                            category_name = category_data.get("name", "Unknown")
-                            for layer_info in category_data.get("layers", []):
-                                icon_url = layer_info.get("icon", {}).get("url", "default.png")
-                                for marker in layer_info.get("markers", []):
-                                    all_locations.append({
-                                        "name": marker.get("name"),
-                                        "category": category_name,
-                                        "layer": layer,
-                                        "coords": marker.get("coords"),
-                                        "icon": icon_url,
-                                    })
+    def _load_all_locations(self):
+        all_locations = {"surface": {}, "sky": {}, "depths": {}}
+        if not os.path.exists(MAP_DATA_DIR):
+            logging.error(f"FATAL: Map data directory not found at: {MAP_DATA_DIR}")
+            return all_locations
+
+        json_files = glob.glob(os.path.join(MAP_DATA_DIR, '**', '*.json'), recursive=True)
+        if not json_files:
+            logging.warning(f"No map marker JSON files found in {MAP_DATA_DIR}.")
+            return all_locations
+
+        for file_path in json_files:
+            try:
+                layer = "surface"
+                if "sky" in file_path.lower(): layer = "sky"
+                elif "depths" in file_path.lower(): layer = "depths"
+                category = os.path.splitext(os.path.basename(file_path))[0]
+
+                with open(file_path, 'r', encoding='utf-8') as f:
+                    data = json.load(f)
+                
+                locations_list = data if isinstance(data, list) else next(iter(data.values()), [])
+                
+                if not isinstance(locations_list, list): continue
+
+                if category not in all_locations[layer]: all_locations[layer][category] = []
+                
+                for loc in locations_list:
+                    if isinstance(loc, dict): loc['category'] = category
+                
+                all_locations[layer][category].extend(locations_list)
+            except Exception as e:
+                logging.error(f"Error processing file {file_path}: {e}")
         return all_locations
 
-    def find_single_location(self, name: str) -> Optional[Dict[str, Any]]:
-        """Finds a single, specific location by its name, prioritizing exact matches."""
-        search_name = name.lower().strip()
-        # Prioritize exact matches
-        for loc in self.locations_db:
-            if loc["name"] and loc["name"].lower() == search_name:
-                return loc
-        # Fallback to partial match if no exact match is found
-        for loc in self.locations_db:
-            if loc["name"] and search_name in loc["name"].lower():
-                return loc
-        print(f"--> Single location not found for name: '{name}'")
-        return None
+    def _load_icon_paths(self):
+        icons = {}
+        if not os.path.exists(ICON_DIR): return icons
+        for icon_file in os.listdir(ICON_DIR):
+            if icon_file.endswith('.png'):
+                icon_name = os.path.splitext(icon_file)[0]
+                icons[icon_name] = os.path.join(ICON_DIR, icon_file)
+        logging.info(f"Loaded {len(icons)} icon paths.")
+        return icons
 
-    def find_locations_in_region(self, category: str, region: str) -> List[Dict[str, Any]]:
-        """Finds all locations of a given category within a defined region."""
-        search_category = category.lower().strip().replace(' ', '').replace('s', '')
-        search_region = region.lower().strip()
+    def _translate_coords_to_pixels(self, game_x, game_z):
+        pixel_x = (game_x + MAP_OFFSET_X) / MAP_SCALE
+        pixel_y = (game_z + MAP_OFFSET_Z) / MAP_SCALE
+        return int(pixel_x), int(pixel_y)
 
-        bounds = self.region_bounds.get(search_region)
-        if not bounds:
-            print(f"Region '{region}' not defined in map_manager.")
-            return []
+    def find_locations_by_category(self, category, layer="surface"):
+        """Finds all locations of a specific category."""
+        logging.info(f"Searching for category '{category}' on layer '{layer}'...")
+        return self.locations.get(layer, {}).get(category, [])
 
-        found_locations = []
-        for loc in self.locations_db:
-            loc_category = loc["category"].lower().strip().replace(' ', '').replace('s', '')
-            if search_category in loc_category and loc["layer"] == bounds["layer"]:
-                coords = loc.get("coords")
-                if coords and (bounds["x_min"] <= coords[0] <= bounds["x_max"]) and (bounds["y_min"] <= coords[1] <= bounds["y_max"]):
-                    found_locations.append(loc)
-        
-        print(f"--> Found {len(found_locations)} '{category}' locations in '{region}'.")
-        return found_locations
+    def find_locations_by_specific_name(self, category, name, layer="surface"):
+        """Finds all locations of a specific item within a category."""
+        logging.info(f"Searching for specific item '{name}' in category '{category}' on layer '{layer}'...")
+        category_locations = self.find_locations_by_category(category, layer)
+        return [loc for loc in category_locations if name.lower() in loc.get('name', '').lower()]
 
-    def generate_map_image(self, locations: List[Dict[str, Any]]) -> Optional[str]:
-        """Dynamically creates a new map image by pasting icons onto a base map."""
-        if not locations:
+    def generate_map_image(self, locations_to_mark, layer="surface", output_filename="generated_map.png"):
+        if not locations_to_mark:
+            logging.warning("generate_map_image called with no locations to mark.")
             return None
+        try:
+            map_image = Image.new('RGBA', (CANVAS_WIDTH, CANVAS_HEIGHT), (12, 16, 33, 255))
+            for location in locations_to_mark:
+                category = location.get("category")
+                if not category: continue
 
-        layer = locations[0]['layer']
-        base_map_name = f"{layer}.jpg"
-        base_map_path = os.path.join(self.map_image_path, base_map_name)
+                icon_path = self.icons.get(category)
+                if not icon_path:
+                    singular_category = category[:-1] if category.endswith('s') else None
+                    if singular_category: icon_path = self.icons.get(singular_category)
+                if not icon_path: continue
 
-        if not os.path.exists(base_map_path):
-            print(f"ERROR: Base map not found at {base_map_path}")
-            return None
+                icon_image = Image.open(icon_path).convert("RGBA")
+                icon_size = (60, 60)
+                icon_image = icon_image.resize(icon_size, Image.Resampling.LANCZOS)
+                
+                game_x, game_z = location.get('x'), location.get('z')
+                if game_x is None or game_z is None: continue
 
-        base_map = Image.open(base_map_path).convert("RGBA")
-        
-        # Create a transparent overlay for drawing icons
-        overlay = Image.new("RGBA", base_map.size, (255, 255, 255, 0))
-
-        # Game coordinate range to pixel range mapping
-        map_width, map_height = base_map.size
-        game_x_range = (-6000, 6000)
-        game_y_range = (-4000, 4000)
-
-        def translate_coords(game_x, game_y):
-            pixel_x = int(((game_x - game_x_range[0]) / (game_x_range[1] - game_x_range[0])) * map_width)
-            pixel_y = int(((game_y_range[1] - game_y) / (game_y_range[1] - game_y_range[0])) * map_height)
-            return pixel_x, pixel_y
-
-        for loc in locations:
-            icon_filename = os.path.basename(loc['icon'])
-            icon_path = os.path.join(self.icon_path, icon_filename)
+                pixel_x, pixel_y = self._translate_coords_to_pixels(float(game_x), float(game_z))
+                paste_x, paste_y = pixel_x - (icon_image.width // 2), pixel_y - (icon_image.height // 2)
+                map_image.paste(icon_image, (paste_x, paste_y), icon_image)
             
-            if os.path.exists(icon_path):
-                try:
-                    icon = Image.open(icon_path).convert("RGBA")
-                    # Standardize icon size
-                    icon_size = 32
-                    icon = icon.resize((icon_size, icon_size)) 
-                    coords = loc.get("coords")
-                    if coords:
-                        px, py = translate_coords(coords[0], coords[1])
-                        # Paste the icon onto the transparent overlay
-                        overlay.paste(icon, (px - icon_size//2, py - icon_size//2), icon)
-                except Exception as e:
-                    print(f"Could not process icon {loc['icon']}: {e}")
-
-        # Combine the base map and the icon overlay
-        combined_image = Image.alpha_composite(base_map, overlay)
-
-        # Save the final image to a temporary file
-        with tempfile.NamedTemporaryFile(delete=False, suffix=".png", mode='wb') as temp_file:
-            combined_image.save(temp_file, format='PNG')
-            print(f"--> Generated custom map at: {temp_file.name}")
-            return temp_file.name
-
-        return None
+            output_path = os.path.join(GENERATED_MAPS_DIR, output_filename)
+            map_image.save(output_path, "PNG")
+            logging.info(f"Successfully generated map image and saved to {output_path}")
+            return output_path
+        except Exception as e:
+            logging.error(f"Failed to generate map image: {e}", exc_info=True)
+            return None

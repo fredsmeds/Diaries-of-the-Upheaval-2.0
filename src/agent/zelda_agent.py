@@ -1,162 +1,121 @@
 # src/agent/zelda_agent.py
 
 import os
-from dotenv import load_dotenv
-from langdetect import detect
-
+import logging
 from langchain_openai import ChatOpenAI
 from langchain.agents import AgentExecutor, create_openai_tools_agent
 from langchain_core.prompts import ChatPromptTemplate, MessagesPlaceholder
 from langchain.tools import Tool
-from langchain_core.messages import HumanMessage, AIMessage
+from langchain.memory import ConversationBufferMemory
 
-# --- Import our data management functions ---
-from src.data_management.transcript_manager import get_relevant_context_from_transcripts, get_chroma_collection
+# --- Import Project-Specific Modules ---
+from src.data_management.transcript_manager import get_relevant_context_from_transcripts
 from src.data_management.compendium_manager import CompendiumManager, format_entry_for_agent
 from src.data_management.youtube_searcher import search_youtube_for_walkthrough
+from src.data_management.map_manager import MapManager
+from src.data_management.web_scraper import get_ign_data_for_agent
 
-# --- Load Environment Variables ---
-load_dotenv()
+# --- Initialize Managers & LLM ---
+compendium_manager = CompendiumManager()
+map_manager = MapManager()
+llm = ChatOpenAI(model="gpt-4o-mini", temperature=0)
 
-# --- Agent Persona & Prompts ---
-
+# --- Multilingual Prompts ---
 PROMPTS = {
-    "de": """Du bist Prinzessin Zelda. Antworte basierend auf den abgerufenen Informationen und bleibe in deiner Rolle. Verwende einen königlichen Ton.""",
-    "en": """You are Princess Zelda. Answer based on the retrieved information and stay in character. Use a regal tone.""",
-    "es": """Eres la Princesa Zelda. Responde en base a la información obtenida y mantente en tu personaje. Usa un tono regio.""",
-    "fr": """Vous êtes la Princesse Zelda. Répondez en vous basant sur les informations récupérées et restez dans votre personnage. Utilisez un ton royal.""",
-    "it": """Sei la Principessa Zelda. Rispondi basandoti sulle informazioni recuperate e rimani nel personaggio. Usa un tono regale.""",
-    "ar": """أنت الأميرة زيلدا. أجيبي بناءً على المعلومات المسترجعة وحافظي على شخصيتك. استخدمي نبرة ملكية.""",
-    "ja": """あなたはゼルダ姫です。取得した情報に基づいて、キャラクターを保ちながら回答してください。高貴な口調で話してください。""",
-    "zh-cn": """你是塞尔达公主。请根据检索到的信息回答，并保持角色身份。请使用高贵的语气。""",
-    "ko": """당신은 젤다 공주입니다. 검색된 정보를 바탕으로 캐릭터를 유지하며 답변해주세요. 위엄 있는 톤을 사용하세요.""",
+    'en': "You are Princess Zelda. Your tone is regal, wise, and encouraging. Answer based on the retrieved information and stay in character.",
+    'de': "Du bist Prinzessin Zelda. Dein Ton ist königlich, weise und ermutigend. Antworte basierend auf den abgerufenen Informationen und bleibe in deiner Rolle.",
+    'es': "Eres la Princesa Zelda. Tu tono es regio, sabio y alentador. Responde en base a la información obtenida y mantente en tu personaje.",
+    'fr': "Vous êtes la Princesse Zelda. Votre ton est royal, sage et encourageant. Répondez en vous basant sur les informations récupérées et restez dans votre personnage.",
+    'it': "Sei la Principessa Zelda. Il tuo tono è regale, saggio e incoraggiante. Rispondi basandoti sulle informazioni recuperate e rimani nel personaggio.",
+    'pt': "Você é a Princesa Zelda. Seu tom é real, sábio e encorajador. Responda com base nas informações recuperadas e permaneça no personagem.",
+    'ar': "أنت الأميرة زيلدا. لهجتك ملكية وحكيمة ومشجعة. أجيبي بناءً على المعلومات المسترجعة وحافظي على شخصيتك.",
+    'ja': "あなたはゼルダ姫です。あなたの口調は気高く、賢く、励ますようです。取得した情報に基づいて、キャラクターを保ちながら回答してください。",
+    'zh-cn': "你是塞尔达公主。你的语气高贵、睿智、鼓舞人心。请根据检索到的信息回答，并保持角色身份。",
+    'ko': "당신은 젤다 공주입니다. 당신의 어조는 고귀하고, 현명하며, 격려적입니다. 검색된 정보를 바탕으로 캐릭터를 유지하며 답변해주세요。",
 }
 
-def detect_language(text: str) -> str:
-    """Detects the language of the input text."""
-    try:
-        return detect(text)
-    except:
-        return "en"
+# --- Detailed System Prompt Template ---
+SYSTEM_PROMPT_TEMPLATE = """
+{base_prompt}
 
-def get_base_prompt(language_code: str) -> str:
-    """Gets the base persona prompt for a given language."""
-    return PROMPTS.get(language_code, PROMPTS["en"])
+**CRITICAL INSTRUCTIONS:**
+- You MUST use your tools to answer questions. Do not answer from your own knowledge.
+- You must answer based *strictly* on the knowledge retrieved from your tools.
 
-AGENT_PROMPT_TEMPLATE = ChatPromptTemplate.from_messages(
-    [
-        ("system", 
-         """{base_prompt}
+**TOOL USAGE LOGIC:**
+- **Lore:** For history, story, characters, use 'SearchLoreTranscripts'.
+- **Images/Descriptions:** For a "picture of" or info on a creature/item, **use `SearchIgnWiki` FIRST**. Use `SearchTotkCompendium` as a backup.
+- **Walkthroughs:** For walkthroughs, encourage first. If they insist, use 'SearchYouTubeForWalkthrough'.
+- **Maps & Locations:** For queries like "where are the koroks" or "show me a map of shrines", you MUST follow this order:
+    1.  **ALWAYS try the `GenerateMap` tool FIRST.**
+    2.  If the `GenerateMap` tool returns a message like "I could not find any locations...", then you should **immediately try the `SearchIgnWiki` tool** with the same query (e.g., "koroks in eldin") as a backup.
 
-         **CRITICAL INSTRUCTIONS for your persona and responses:**
-         - Your primary directive is to use your tools to answer questions. You MUST NOT answer from your own internal knowledge.
-         - Before answering, you MUST think about which tool is appropriate for the user's question.
-         - If a tool returns no relevant information, or if you cannot find an answer using your tools, you MUST state that you do not have the information in the archives. Do not invent an answer.
-         - You must answer based *strictly* on the knowledge retrieved from your tools (the "Observation").
-         - *** CRITICAL IMAGE INSTRUCTION ***: If a tool's observation contains an image URL tag like '|||IMAGE_URL:https://...', your final answer MUST include this exact, verbatim tag at the very end. For example, if the observation is 'Bokoblin info...|||IMAGE_URL:http://.../bokoblin.png', your final answer must be 'Here is information on the Bokoblin...|||IMAGE_URL:http://.../bokoblin.png'. DO NOT format it as a Markdown link like '[Bokoblin](http://.../bokoblin.png)'. The tag must be raw and unchanged.
-         - When referring to yourself, Princess Zelda, use the first person ("I", "my").
-         - Avoid mentioning the real world. Refer to "The Legend of Zelda" or "Tears of the Kingdom" as "this era" or "the events of the upheaval."
-         - Frame knowledge from "Breath of the Wild" as a "distant memory" if the tool provides that context.
-         - Walkthrough Persona Logic: If the user asks for a walkthrough (e.g., "how do I solve", "how do I beat"), your FIRST response should be to gently encourage them. DO NOT use a tool. Say something like: "The path of the hero is one of discovery. I encourage you to face this challenge with courage. However, if you truly require my guidance, please ask again."
-         - Only if the user insists or asks a second time for the same walkthrough should you use the "SearchYouTubeForWalkthrough" tool.
-         
-         - *** CRITICAL WALKTHROUGH LINK FORMATTING ***: When the "SearchYouTubeForWalkthrough" tool returns a list of videos, you MUST format your final answer using these exact tags and HTML links. The text-to-speech system will only read the parts inside |||SPEAK||| tags.
-           1. Start with `|||SPEAK|||` followed by an introductory sentence.
-           2. Close the sentence with `|||NOSPEAK|||`.
-           3. For each video, create a standard HTML hyperlink. The link text should be the video title, and it should open in a new tab. The link should be styled with a distinct, regal color.
-           4. After the links, start again with `|||SPEAK|||` followed by a concluding sentence.
-           5. Close the final sentence with `|||NOSPEAK|||`.
-           **Example format:**
-           `|||SPEAK|||I appreciate your persistence. Here are some visual records that may aid you on your quest.|||NOSPEAK|||`
-           `1. <a href="https://www.youtube.com/watch?v=..." target="_blank" style="color: #4a235a; font-weight: bold;">Video Title One</a>`
-           `2. <a href="https://www.youtube.com/watch?v=..." target="_blank" style="color: #4a235a; font-weight: bold;">Video Title Two</a>`
-           `|||SPEAK|||May these guides illuminate your path.|||NOSPEAK|||`
+**MAP TOOL INSTRUCTIONS (VERY IMPORTANT):**
+The `GenerateMap` tool requires a `category` and an optional `specific_item`.
+- The `category` MUST be one of the following exact strings: 'caves', 'chests', 'creatures', 'dispensers', 'koroks', 'labels', 'locations', 'materials', 'monsters', 'othermarkers', 'quests', 'services', 'tgates', 'treasure'.
+- From the user's query, you must determine the correct category.
+- **Example 1:** If the user asks "show me the shrines", you must recognize that "shrines" are a type of "tgates". You will call the tool with `category='tgates'`.
+- **Example 2:** If the user asks "where are the ice chuchus", you must recognize that "ice chuchus" are a type of "monster". You will call the tool with `category='monsters'` and `specific_item='ice chuchu'`.
 
-         - Give detailed answers, mentioning characters and context from the information you've found.
-         - Speak with reverence for the history of Hyrule.
-         """),
+**FORMATTING RULES:**
+- **Images:** The response MUST contain `|||IMAGE_URL:...|||` on a new line.
+- **Maps:** The response MUST contain `|||MAP_URL:generated_maps/...|||` on a new line.
+
+{language_instruction}
+"""
+
+def generate_map_wrapper(category: str, specific_item: str = None, layer: str = "surface"):
+    """Wrapper for the map generation tool to handle different query types."""
+    logging.info(f"--> Map Tool called with Category: '{category}', Specific Item: '{specific_item}'")
+    locations = []
+    if specific_item:
+        locations = map_manager.find_locations_by_specific_name(category, specific_item, layer)
+    else:
+        locations = map_manager.find_locations_by_category(category, layer)
+    
+    if not locations:
+        return "I could not find any locations matching that request in the archives."
+
+    filename = f"{layer}_{specific_item.replace(' ', '_') if specific_item else category}_map.png"
+    return map_manager.generate_map_image(locations, layer, filename)
+
+
+def run_compendium_search(query: str) -> str:
+    entry = compendium_manager.find_entry(query)
+    formatted = format_entry_for_agent(entry)
+    desc = formatted["description"]
+    img = formatted["image_url"]
+    return f"{desc}\n|||IMAGE_URL:{img}|||" if img else desc
+
+tools = [
+    Tool(name="SearchIgnWiki", func=get_ign_data_for_agent, description="Use this tool FIRST to find accurate descriptions and images for any specific creature, monster, or item. Also use this as a backup if a map cannot be generated."),
+    Tool(name="SearchTotkCompendium", func=run_compendium_search, description="A backup tool. Use this ONLY if the SearchIgnWiki tool fails."),
+    Tool(name="SearchLoreTranscripts", func=get_relevant_context_from_transcripts, description="Use this for questions about history, story, and characters."),
+    Tool(name="SearchYouTubeForWalkthrough", func=search_youtube_for_walkthrough, description="Use this ONLY when a user insists on getting a walkthrough."),
+    Tool(name="GenerateMap", func=generate_map_wrapper, description="Use this to generate a map showing locations of items. Requires a `category` and an optional `specific_item` name."),
+]
+
+memory = ConversationBufferMemory(memory_key="chat_history", return_messages=True)
+
+def get_zelda_response(user_input: str, lang: str = 'en') -> str:
+    base_prompt = PROMPTS.get(lang, PROMPTS.get('en'))
+    language_instruction = f"IMPORTANT: You must respond in {lang}."
+    final_system_prompt = SYSTEM_PROMPT_TEMPLATE.format(base_prompt=base_prompt, language_instruction=language_instruction)
+
+    prompt = ChatPromptTemplate.from_messages([
+        ("system", final_system_prompt),
         MessagesPlaceholder(variable_name="chat_history"),
         ("human", "{input}"),
         MessagesPlaceholder(variable_name="agent_scratchpad"),
-    ]
-)
+    ])
 
+    agent = create_openai_tools_agent(llm, tools, prompt)
+    agent_executor = AgentExecutor(agent=agent, tools=tools, memory=memory, verbose=True, handle_parsing_errors=True)
 
-# --- Agent Initialization ---
-
-def create_zelda_agent():
-    """
-    Creates and initializes the LangChain agent for Princess Zelda.
-    """
-    print("Initializing Princess Zelda Agent...")
-
-    llm = ChatOpenAI(model="gpt-4o-mini", temperature=0.7)
-    
-    print("Loading knowledge bases...")
-    lore_collection = get_chroma_collection()
-    compendium_manager = CompendiumManager()
-    print("Knowledge bases loaded.")
-
-    def run_compendium_search(query: str) -> str:
-        print(f"--> Compendium Tool called with query: '{query}'")
-        entry = compendium_manager.find_entry(query)
-        return format_entry_for_agent(entry)
-
-    tools = [
-        Tool(
-            name="SearchLoreTranscripts",
-            func=lambda query: get_relevant_context_from_transcripts(query, lore_collection),
-            description="Use this to find information about the history, story, lore, and characters from the events of this era and my distant memories (BOTW/TOTK)."
-        ),
-        Tool(
-            name="SearchGameGuideCompendium",
-            func=run_compendium_search,
-            description="Use this to look up specific game items, creatures, monsters, or materials from Tears of the Kingdom. The input should be the name of the item you want to find."
-        ),
-        Tool(
-            name="SearchYouTubeForWalkthrough",
-            func=search_youtube_for_walkthrough,
-            description="Use this tool ONLY when a user insists or asks a second time for help with a specific shrine, mission, or boss walkthrough."
-        ),
-    ]
-
-    agent = create_openai_tools_agent(llm, tools, AGENT_PROMPT_TEMPLATE)
-    
-    agent_executor = AgentExecutor(
-        agent=agent,
-        tools=tools,
-        verbose=True,
-        handle_parsing_errors=True,
-        max_iterations=5,
-    )
-
-    print("Agent Initialized Successfully.")
-    return agent_executor
-
-# --- Main Execution Block (for testing) ---
-if __name__ == '__main__':
-    zelda_agent_executor = create_zelda_agent()
-    
-    print("\n--- Command-Line Agent Test ---")
-    print("Agent is ready. Type 'quit' to exit.")
-    
-    chat_history = []
-
-    while True:
-        user_input = input("You: ")
-        if user_input.lower() == 'quit':
-            break
-        
-        lang_code = detect_language(user_input)
-        base_prompt_text = get_base_prompt(lang_code)
-        
-        response = zelda_agent_executor.invoke({
-            "input": user_input,
-            "base_prompt": base_prompt_text,
-            "chat_history": chat_history,
-        })
-        
-        chat_history.append(HumanMessage(content=user_input))
-        chat_history.append(AIMessage(content=response['output']))
-        
-        print(f"\nPrincess Zelda: {response['output']}\n")
+    logging.info(f"Invoking agent for language: {lang}")
+    try:
+        response = agent_executor.invoke({"input": user_input})
+        return response.get("output", "I... I'm not sure how to respond to that.")
+    except Exception as e:
+        logging.error(f"An error occurred while getting the agent's response: {e}")
+        return "My apologies, I seem to be having trouble focusing. Could you please repeat that?"

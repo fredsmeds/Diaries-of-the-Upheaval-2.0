@@ -1,0 +1,433 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Diaries of the Upheaval</title>
+    <style>
+        /* --- Basic Setup & Theming --- */
+        @import url('https://fonts.googleapis.com/css2?family=Marcellus&display=swap');
+
+        body {
+            font-family: 'Marcellus', serif;
+            background-color: #0c1021;
+            color: #e0e0e0;
+            margin: 0;
+            /* This is key for the flexbox layout to work */
+            height: 100vh;
+            width: 100vw;
+            overflow: hidden; /* Prevent the whole body from scrolling */
+        }
+
+        /* --- Background --- */
+        .background-container {
+            position: fixed;
+            top: 0;
+            left: 0;
+            width: 100%;
+            height: 100%;
+            z-index: -1;
+            background-image: url('/assets/background_mobile.gif'); 
+            background-size: cover;
+            background-position: center;
+            opacity: 0.25;
+        }
+
+        @media (min-width: 768px) {
+            .background-container {
+                background-image: url('/assets/background_desktop.gif');
+            }
+        }
+
+        /* --- Main Chat Container --- */
+        .chat-container {
+            display: flex; /* Use flexbox for layout */
+            flex-direction: column; /* Stack children vertically */
+            height: 100%; /* Make the container fill the screen height */
+            max-width: 800px;
+            width: 95%;
+            margin: 0 auto;
+            padding: 20px;
+            position: relative;
+            z-index: 1;
+            box-sizing: border-box;
+        }
+
+        header {
+            text-align: center;
+            padding: 10px 0;
+            /* Prevent header from shrinking */
+            flex-shrink: 0;
+        }
+
+        header h1 {
+            margin: 0;
+            font-size: 2.5em;
+            color: #fdf4d9;
+            text-shadow: 0 0 10px #fdf4d9, 0 0 20px #fdf4d9;
+        }
+
+        header p {
+            margin: 0;
+            color: #a0b0c0;
+            font-size: 1.1em;
+        }
+
+        /* --- Chatbox & Bubbles --- */
+        #chatbox {
+            flex-grow: 1; /* Allow the chatbox to grow and fill available space */
+            overflow-y: auto; /* Make ONLY the chatbox scrollable */
+            padding: 10px;
+            margin-bottom: 10px;
+            scrollbar-width: thin;
+            scrollbar-color: #4a235a #0c1021;
+        }
+
+        .chat-bubble {
+            max-width: 75%;
+            padding: 12px 18px;
+            border-radius: 20px;
+            margin-bottom: 15px;
+            line-height: 1.5;
+            box-shadow: 0 2px 5px rgba(0,0,0,0.2);
+            opacity: 0;
+            transform: translateY(20px);
+            animation: popIn 0.5s forwards;
+        }
+
+        .user-bubble {
+            background-color: #2a3b4d;
+            color: #e0e0e0;
+            margin-left: auto;
+            text-align: right;
+        }
+
+        .zelda-bubble {
+            background-color: #fdf4d9;
+            color: #3d2c1d;
+            margin-right: auto;
+            border: 2px solid #c8b88a;
+        }
+
+        .zelda-bubble p, .user-bubble p {
+            margin: 0;
+        }
+
+        .compendium-image {
+            max-width: 100%;
+            border-radius: 10px;
+            margin-top: 10px;
+            border: 3px solid #c8b88a;
+        }
+
+        /* --- Input Form --- */
+        .input-form {
+            display: flex;
+            padding: 10px 0;
+             /* Prevent form from shrinking */
+            flex-shrink: 0;
+        }
+
+        #userInput {
+            flex-grow: 1;
+            padding: 12px 15px;
+            border: 2px solid #4a235a;
+            border-radius: 20px;
+            background-color: #1a2035;
+            color: #e0e0e0;
+            font-family: 'Marcellus', serif;
+            font-size: 1em;
+        }
+
+        #userInput:focus {
+            outline: none;
+            border-color: #fdf4d9;
+        }
+
+        .button-group button {
+            padding: 12px 20px;
+            margin-left: 10px;
+            border: none;
+            border-radius: 20px;
+            background-color: #4a235a;
+            color: #fdf4d9;
+            font-family: 'Marcellus', serif;
+            cursor: pointer;
+            font-size: 1em;
+            transition: background-color 0.3s, transform 0.1s;
+        }
+
+        .button-group button:hover {
+            background-color: #6c3483;
+        }
+
+        .button-group button:active {
+            transform: scale(0.95);
+        }
+        
+        #micButton.recording {
+            background-color: #e74c3c; /* Red color when recording */
+            animation: pulse 1.5s infinite;
+        }
+
+        /* --- Loading Indicator --- */
+        #loading {
+            display: none;
+            text-align: center;
+            padding: 10px;
+            font-size: 1.2em;
+            color: #fdf4d9;
+        }
+        
+        .loader {
+            width: 48px;
+            height: 48px;
+            border: 5px solid #FFF;
+            border-bottom-color: #4a235a;
+            border-radius: 50%;
+            display: inline-block;
+            box-sizing: border-box;
+            animation: rotation 1s linear infinite;
+            margin: 0 auto;
+        }
+
+        /* --- Animations --- */
+        @keyframes popIn {
+            to {
+                opacity: 1;
+                transform: translateY(0);
+            }
+        }
+        
+        @keyframes pulse {
+            0% { box-shadow: 0 0 0 0 rgba(231, 76, 60, 0.7); }
+            70% { box-shadow: 0 0 0 10px rgba(231, 76, 60, 0); }
+            100% { box-shadow: 0 0 0 0 rgba(231, 76, 60, 0); }
+        }
+
+        @keyframes rotation {
+            0% { transform: rotate(0deg); }
+            100% { transform: rotate(360deg); }
+        }
+    </style>
+</head>
+<body>
+
+    <div class="background-container"></div>
+
+    <div class="chat-container">
+        <header>
+            <h1>Diaries of the Upheaval</h1>
+            <p>A Q&A Guide to Hyrule, hosted by Princess Zelda</p>
+        </header>
+
+        <div id="chatbox">
+            <!-- Chat messages will be appended here -->
+        </div>
+        
+        <div id="loading">
+            <span class="loader"></span>
+        </div>
+
+        <form id="chat-form" class="input-form">
+            <input type="text" id="userInput" placeholder="Ask your question here..." autocomplete="off">
+            <div class="button-group">
+                <button type="submit">Send</button>
+                <button type="button" id="micButton">Mic</button>
+            </div>
+        </form>
+    </div>
+
+    <script>
+        const chatForm = document.getElementById('chat-form');
+        const userInput = document.getElementById('userInput');
+        const chatbox = document.getElementById('chatbox');
+        const loadingIndicator = document.getElementById('loading');
+        const micButton = document.getElementById('micButton');
+
+        const API_BASE_URL = `${window.location.protocol}//${window.location.hostname}:5000`;
+
+        let mediaRecorder;
+        let audioChunks = [];
+        let isRecording = false;
+
+        chatForm.addEventListener('submit', handleFormSubmit);
+        micButton.addEventListener('click', toggleRecording);
+
+        async function handleFormSubmit(event) {
+            event.preventDefault();
+            const userMessage = userInput.value.trim();
+            if (!userMessage) return;
+
+            appendMessage(userMessage, 'user-bubble');
+            userInput.value = '';
+            loadingIndicator.style.display = 'block';
+
+            try {
+                const response = await fetch(`${API_BASE_URL}/chat`, {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({ message: userMessage })
+                });
+
+                if (!response.ok) throw new Error(`HTTP error! Status: ${response.status}`);
+                
+                const data = await response.json();
+                handleAgentResponse(data);
+
+            } catch (error) {
+                console.error('Error fetching chat response:', error);
+                appendMessage('My apologies, I seem to be having trouble communicating right now.', 'zelda-bubble');
+            } finally {
+                loadingIndicator.style.display = 'none';
+            }
+        }
+        
+        function handleAgentResponse(data) {
+            const responseText = data.response;
+            let audioUrl = data.audio_url || null;
+
+            if (responseText.includes('|||IMAGE_URL:')) {
+                const parts = responseText.split('|||IMAGE_URL:');
+                const description = parts[0].trim();
+                
+                const imageUrlWithTag = parts[1].trim();
+                const imageUrl = imageUrlWithTag.split('|||')[0].trim();
+                
+                appendImageMessage(description, imageUrl);
+                if (audioUrl) playAudioFromUrl(audioUrl);
+
+            } else if (responseText.includes('|||MAP_URL:')) {
+                const parts = responseText.split('|||MAP_URL:');
+                const preText = parts[0].trim();
+                const mapUrlWithTag = parts[1].trim();
+                const mapUrl = mapUrlWithTag.split('|||')[0].trim();
+                appendMapMessage(preText, mapUrl);
+                if (audioUrl) playAudioFromUrl(audioUrl);
+
+            } else if (responseText.includes('|||SPEAK|||')) {
+                const displayHtml = responseText.replace(/\|\|\|SPEAK\|\|\|/g, '').replace(/\|\|\|NOSPEAK\|\|\|/g, '');
+                appendMessage(displayHtml, 'zelda-bubble', true);
+                if (audioUrl) playAudioFromUrl(audioUrl);
+
+            } else {
+                appendMessage(responseText, 'zelda-bubble');
+                if (audioUrl) playAudioFromUrl(audioUrl);
+            }
+        }
+
+        function playAudioFromUrl(relativeUrl) {
+            const audio = new Audio(`${API_BASE_URL}${relativeUrl}`);
+            audio.play().catch(e => console.error("Error playing audio:", e));
+        }
+
+        function appendMessage(content, bubbleClass, isHtml = false) {
+            const bubble = document.createElement('div');
+            bubble.classList.add('chat-bubble', bubbleClass);
+            if (isHtml) {
+                bubble.innerHTML = content;
+            } else {
+                const p = document.createElement('p');
+                p.textContent = content;
+                bubble.appendChild(p);
+            }
+            chatbox.appendChild(bubble);
+            chatbox.scrollTop = chatbox.scrollHeight;
+        }
+
+        function appendImageMessage(description, imageUrl) {
+            const bubble = document.createElement('div');
+            bubble.classList.add('chat-bubble', 'zelda-bubble');
+            bubble.innerHTML = `
+                <p>${description}</p>
+                <img src="${imageUrl}" alt="Compendium Image" class="compendium-image" onerror="this.style.display='none'">
+            `;
+            chatbox.appendChild(bubble);
+            chatbox.scrollTop = chatbox.scrollHeight;
+        }
+
+        function appendMapMessage(preText, mapUrl) {
+            const bubble = document.createElement('div');
+            bubble.classList.add('chat-bubble', 'zelda-bubble');
+            bubble.innerHTML = `
+                <p>${preText}</p>
+                <img src="/${mapUrl}" alt="Generated Hyrule Map" class="compendium-image" onerror="this.style.display='none'">
+            `;
+            chatbox.appendChild(bubble);
+            chatbox.scrollTop = chatbox.scrollHeight;
+        }
+
+        async function toggleRecording() {
+            if (isRecording) {
+                stopRecording();
+            } else {
+                startRecording();
+            }
+        }
+
+        async function startRecording() {
+            try {
+                const stream = await navigator.mediaDevices.getUserMedia({ audio: true });
+                mediaRecorder = new MediaRecorder(stream);
+                mediaRecorder.start();
+                isRecording = true;
+                micButton.classList.add('recording');
+                micButton.textContent = 'Stop';
+
+                mediaRecorder.addEventListener('dataavailable', event => {
+                    audioChunks.push(event.data);
+                });
+
+                mediaRecorder.addEventListener('stop', sendAudioData);
+
+            } catch (error) {
+                console.error('Error accessing microphone:', error);
+                alert('Could not access the microphone. Please ensure you have given permission.');
+            }
+        }
+
+        function stopRecording() {
+            if (mediaRecorder && mediaRecorder.state !== "inactive") {
+                mediaRecorder.stop();
+                isRecording = false;
+                micButton.classList.remove('recording');
+                micButton.textContent = 'Mic';
+                mediaRecorder.stream.getTracks().forEach(track => track.stop());
+            }
+        }
+
+        async function sendAudioData() {
+            const audioBlob = new Blob(audioChunks, { type: 'audio/webm' });
+            audioChunks = [];
+
+            const formData = new FormData();
+            formData.append('audio_data', audioBlob);
+
+            loadingIndicator.style.display = 'block';
+            appendMessage('[Recording sent]', 'user-bubble');
+
+            try {
+                const response = await fetch(`${API_BASE_URL}/audio`, {
+                    method: 'POST',
+                    body: formData
+                });
+                if (!response.ok) throw new Error(`HTTP error! Status: ${response.status}`);
+                
+                const data = await response.json();
+                handleAgentResponse(data);
+
+            } catch (error) {
+                console.error('Error sending audio:', error);
+                appendMessage('I am sorry, I could not process that recording.', 'zelda-bubble');
+            } finally {
+                loadingIndicator.style.display = 'none';
+            }
+        }
+        
+        window.onload = () => {
+             appendMessage('Greetings. I am Princess Zelda. What knowledge of Hyrule do you seek?', 'zelda-bubble');
+        };
+
+    </script>
+</body>
+</html>

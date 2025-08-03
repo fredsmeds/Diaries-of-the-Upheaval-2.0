@@ -1,127 +1,118 @@
 # src/audio_processing/handler.py
 
 import os
-import tempfile
-import traceback
 import whisper
-from pydub import AudioSegment
-from pydub.exceptions import CouldntDecodeError
+import logging
+from elevenlabs import play, save
 from elevenlabs.client import ElevenLabs
 from dotenv import load_dotenv
 
 # --- Load Environment Variables ---
+# This ensures the ELEVEN_API_KEY is available for the client.
 load_dotenv()
 
-# --- Initialization ---
+# --- Basic Configuration ---
+logging.basicConfig(level=logging.INFO)
 
-# Initialize the ElevenLabs client
+# --- Initialize Clients and Models ---
 try:
-    api_key = os.getenv("ELEVEN_LABS_API_KEY")
-    if not api_key:
-        raise ValueError("ELEVEN_LABS_API_KEY not found in environment variables.")
-    
-    elevenlabs_client = ElevenLabs(api_key=api_key)
-    print("ElevenLabs client initialized successfully.")
-
+    # Initialize the ElevenLabs client with the API key from your .env file
+    eleven_client = ElevenLabs(api_key=os.getenv("ELEVEN_API_KEY"))
+    logging.info("ElevenLabs client initialized successfully.")
 except Exception as e:
-    print(f"Error initializing ElevenLabs client: {e}")
-    elevenlabs_client = None
+    logging.error(f"Failed to initialize ElevenLabs client: {e}")
+    eleven_client = None
 
-# Load the Whisper model
 try:
-    print("Loading Whisper model...")
+    # Load the Whisper model. 'base' is a good balance of speed and accuracy.
+    # The model will be downloaded on the first run.
+    logging.info("Loading Whisper model...")
     whisper_model = whisper.load_model("base")
-    print("Whisper model loaded successfully.")
+    logging.info("Whisper model loaded successfully.")
 except Exception as e:
-    print(f"Error loading Whisper model: {e}")
+    logging.error(f"Failed to load Whisper model: {e}")
     whisper_model = None
 
-# Define the voice ID for Princess Zelda
-ZELDA_VOICE_ID = "21m00Tcm4TlvDq8ikWAM" # Voice ID for "Rachel" (free voice)
+# Define the directory to save generated audio files.
+AUDIO_FILES_DIR = os.path.join(os.getcwd(), 'generated_audio')
+os.makedirs(AUDIO_FILES_DIR, exist_ok=True)
 
-# --- Core Functions ---
 
-def transcribe_audio(audio_file_path: str) -> str | None:
+def text_to_speech(text: str) -> str | None:
     """
-    Transcribes audio from a file path to text using the local Whisper model.
-    It now handles the conversion from .webm to a compatible format.
+    Converts a string of text into a spoken audio file using the ElevenLabs API.
+
+    Args:
+        text (str): The text to be converted to speech.
+
+    Returns:
+        str | None: The file path of the generated MP3 file, or None if an error occurred.
+    """
+    if not eleven_client:
+        logging.error("ElevenLabs client is not initialized. Cannot perform text-to-speech.")
+        return None
+    if not text:
+        logging.warning("Text-to-speech called with empty text.")
+        return None
+
+    try:
+        # Generate the audio from the text using a pre-selected voice.
+        # "Rachel" is a good default voice, but this can be changed.
+        audio = eleven_client.generate(
+            text=text,
+            voice="Rachel", 
+            model="eleven_multilingual_v2"
+        )
+
+        # Create a unique filename to avoid overwriting files.
+        output_filename = f"response_{hash(text)}.mp3"
+        output_path = os.path.join(AUDIO_FILES_DIR, output_filename)
+
+        # Save the generated audio to the specified file path.
+        save(audio, output_path)
+        logging.info(f"Audio file saved successfully to {output_path}")
+        
+        return output_path
+
+    except Exception as e:
+        logging.error(f"An error occurred during text-to-speech generation: {e}")
+        return None
+
+
+def speech_to_text(audio_file) -> str | None:
+    """
+    Transcribes spoken audio from a file into text using the Whisper model.
+
+    Args:
+        audio_file: A file-like object containing the audio data.
+
+    Returns:
+        str | None: The transcribed text, or None if an error occurred.
     """
     if not whisper_model:
-        print("Whisper model is not loaded. Cannot transcribe audio.")
+        logging.error("Whisper model is not loaded. Cannot perform speech-to-text.")
         return None
-    
-    print(f"Starting transcription for: {audio_file_path}")
-    
-    # --- START OF THE FIX ---
-    # Convert .webm file sent from the browser to .mp3 before transcription
+
     try:
-        print("Attempting to convert .webm to .mp3 for Whisper compatibility...")
-        audio = AudioSegment.from_file(audio_file_path, format="webm")
+        # Save the incoming audio file temporarily to disk, as Whisper works with file paths.
+        temp_audio_path = os.path.join(AUDIO_FILES_DIR, "temp_input_audio.webm")
+        audio_file.save(temp_audio_path)
         
-        with tempfile.NamedTemporaryFile(delete=False, suffix=".mp3") as temp_mp3:
-            audio.export(temp_mp3.name, format="mp3")
-            mp3_path = temp_mp3.name
-        
-        print(f"Conversion successful. Transcribing MP3 at: {mp3_path}")
-        result = whisper_model.transcribe(mp3_path)
+        # Transcribe the audio file.
+        result = whisper_model.transcribe(temp_audio_path)
         transcribed_text = result["text"]
-        print(f"Transcription result: '{transcribed_text}'")
         
-        os.remove(mp3_path)
-        print(f"Cleaned up temporary file: {mp3_path}")
+        logging.info(f"Transcribed text: {transcribed_text}")
+        
+        # Clean up the temporary file.
+        os.remove(temp_audio_path)
         
         return transcribed_text
 
-    except (FileNotFoundError, CouldntDecodeError) as e:
-        # This is the most likely error if FFmpeg is not installed.
-        print("\n" + "="*80)
-        print("--> CRITICAL ERROR: Could not process audio file. This is almost always")
-        print("--> because FFmpeg is not installed or not available in your system's PATH.")
-        print("--> Please ensure FFmpeg is installed correctly to fix this.")
-        print("--> For installation instructions, see: https://ffmpeg.org/download.html")
-        print("="*80 + "\n")
-        traceback.print_exc()
-        return None
-        
     except Exception as e:
-        print(f"An unexpected error occurred during transcription: {e}")
-        traceback.print_exc()
-        return None
-    # --- END OF THE FIX ---
-
-
-def generate_speech(text: str) -> str | None:
-    """
-    Converts text to speech using the ElevenLabs API and saves it to a temporary file.
-    """
-    if not elevenlabs_client:
-        print("ElevenLabs client is not initialized. Cannot generate speech.")
-        return None
-
-    try:
-        print(f"Generating speech for text: '{text[:50]}...'")
-        
-        audio_data = elevenlabs_client.text_to_speech.convert(
-            voice_id=ZELDA_VOICE_ID,
-            text=text,
-            model_id="eleven_multilingual_v2"
-        )
-
-        # Create a temporary file to hold the audio data
-        with tempfile.NamedTemporaryFile(delete=False, suffix=".mp3", mode='wb') as temp_audio_file:
-            for chunk in audio_data:
-                temp_audio_file.write(chunk)
-            
-            print(f"Speech saved to temporary file: {temp_audio_file.name}")
-            # Return the path to the temporary file
-            return temp_audio_file.name
-
-    except Exception as e:
-        print("\n" + "="*80)
-        print("--> CRITICAL ERROR: Speech generation failed.")
-        print("--> This could be due to an invalid ElevenLabs API key,")
-        print("--> network issues, or a problem with the selected voice ID.")
-        print("="*80 + "\n")
-        traceback.print_exc()
+        logging.error(f"An error occurred during speech-to-text transcription: {e}")
+        # Clean up the temp file even if an error occurs
+        if os.path.exists(temp_audio_path):
+            os.remove(temp_audio_path)
         return None
 

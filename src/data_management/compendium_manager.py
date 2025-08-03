@@ -1,132 +1,98 @@
 # src/data_management/compendium_manager.py
-
 import json
 import os
-import pandas as pd
-from typing import Optional, Dict, Any
+import logging
 
-# Define the base URL for your GitHub repository's raw content.
-GITHUB_USER = "fredsmeds"
-REPO_NAME = "Diaries-of-the-Upheaval-2.0"
-BRANCH_NAME = "main"
-LOCAL_IMAGE_PATH_PREFIX = "data/compendium/images/"
-GITHUB_BASE_URL = f"https://raw.githubusercontent.com/{GITHUB_USER}/{REPO_NAME}/{BRANCH_NAME}/{LOCAL_IMAGE_PATH_PREFIX}"
+# Basic Configuration
+logging.basicConfig(level=logging.INFO)
 
+# Path Definitions
+BASE_DIR = os.path.abspath(os.path.join(os.path.dirname(__file__), '..', '..'))
+DATA_DIR = os.path.join(BASE_DIR, 'data', 'compendium', 'data')
+COMPENDIUM_FILE = os.path.join(DATA_DIR, 'COMPENDIUM.json')
 
 class CompendiumManager:
-    """
-    Manages loading and searching the Tears of the Kingdom compendium data
-    from the COMPENDIUM.json file.
-    """
-    def __init__(self, data_path: str = "data/compendium/data/COMPENDIUM.json"):
-        self.data_path = data_path
-        self.all_entries_df: Optional[pd.DataFrame] = None
-        self._load_all_data()
+    def __init__(self):
+        self.entries = self._load_compendium()
 
-    def _load_all_data(self):
-        print("--- Loading Compendium Data ---")
+    def _load_compendium(self):
+        logging.info("--- Loading Compendium Data (v4 - Final) ---")
         try:
-            with open(self.data_path, 'r', encoding='utf-8') as f:
-                raw_data = json.load(f)
-
-            raw_data.pop('info', None)
-            entries_dict = raw_data
-
-            entries_list = []
-            for name, details in entries_dict.items():
-                details['id_name'] = name 
-                entries_list.append(details)
-
-            df = pd.DataFrame(entries_list)
-            self.all_entries_df = df
-            self.all_entries_df['search_name'] = self.all_entries_df['name'].str.lower()
+            with open(COMPENDIUM_FILE, 'r', encoding='utf-8') as f:
+                data = json.load(f)
             
-            print("  - Correcting image URLs to point to local/GitHub repository...")
+            logging.info(" - Correcting image URLs...")
             
-            def create_new_url(old_url):
-                if pd.notna(old_url):
-                    filename = os.path.basename(old_url)
-                    return f"{GITHUB_BASE_URL}{filename}"
-                return None
+            # This handles both flat and nested structures
+            def correct_urls_recursive(obj):
+                if isinstance(obj, dict):
+                    for key, value in obj.items():
+                        if key == 'image' and isinstance(value, str) and value.startswith('./images/'):
+                            obj[key] = value.replace(
+                                './images/',
+                                'https://raw.githubusercontent.com/fredsmeds/Diaries-of-the-Upheaval-2.0/main/data/compendium/images/'
+                            )
+                        else:
+                            correct_urls_recursive(value)
+                elif isinstance(obj, list):
+                    for item in obj:
+                        correct_urls_recursive(item)
 
-            self.all_entries_df['image'] = self.all_entries_df['image'].apply(create_new_url)
-            self.all_entries_df['thumbnail'] = self.all_entries_df['thumbnail'].apply(create_new_url)
-
-            print(f"  - Successfully loaded and processed {len(df)} entries from '{os.path.basename(self.data_path)}'.")
-            print("--- Compendium Data Loaded Successfully ---")
-
+            correct_urls_recursive(data)
+            
+            logging.info(f" - Successfully loaded and processed entries from '{os.path.basename(COMPENDIUM_FILE)}'.")
+            logging.info("--- Compendium Data Loaded Successfully ---")
+            return data
         except FileNotFoundError:
-            print(f"  - ERROR: '{self.data_path}' not found. Please ensure COMPENDIUM.json is in the correct directory.")
+            logging.error(f"FATAL: Compendium file not found at {COMPENDIUM_FILE}")
+            return {}
         except Exception as e:
-            print(f"  - An unexpected error occurred loading '{self.data_path}': {e}")
+            logging.error(f"Error loading compendium: {e}")
+            return {}
 
-    def find_entry(self, query: str) -> Optional[Dict[str, Any]]:
+    def find_entry(self, query: str):
         """
-        Finds a single compendium entry by its name (case-insensitive).
+        Recursively searches for a compendium entry by name in a potentially nested dictionary.
         """
-        if self.all_entries_df is None:
+        if not self.entries:
+            return None
+            
+        query = query.lower().strip()
+        
+        def search_recursive(data):
+            if isinstance(data, dict):
+                # Check if the current dictionary is a valid entry
+                if 'name' in data and query in data['name'].lower():
+                    return data
+                # If not, search through its values
+                for value in data.values():
+                    result = search_recursive(value)
+                    if result:
+                        return result
+            elif isinstance(data, list):
+                for item in data:
+                    result = search_recursive(item)
+                    if result:
+                        return result
             return None
 
-        search_query = query.lower().strip()
+        found_entry = search_recursive(self.entries)
+        if found_entry:
+            logging.info(f"Found entry for '{query}'")
+        else:
+            logging.warning(f"No entry found for query: '{query}'")
+        
+        return found_entry
 
-        exact_match = self.all_entries_df[self.all_entries_df['search_name'] == search_query]
-        if not exact_match.empty:
-            return exact_match.iloc[0].to_dict()
 
-        partial_match = self.all_entries_df[self.all_entries_df['search_name'].str.contains(search_query, na=False)]
-        if not partial_match.empty:
-            return partial_match.iloc[0].to_dict()
-
-        return None
-
-def format_entry_for_agent(entry: Optional[Dict[str, Any]]) -> str:
+def format_entry_for_agent(entry: dict | None) -> dict:
     """
-    Formats a compendium entry into a special string containing both the text
-    description and a hidden image URL for the agent and UI to use.
+    Formats a compendium entry into a structured dictionary for the agent.
     """
     if not entry:
-        return "I could not find any information on that subject in the compendium."
-
-    name = entry.get('name', 'N/A').title()
-    category = entry.get('category', 'N/A').title()
+        return {"description": "I could not find any information on that in the archives.", "image_url": None}
+    
     description = entry.get('description', 'No description available.')
-    image_url = entry.get('image') # Use the corrected image URL
+    image_url = entry.get('image', None)
     
-    # Create the text part of the response
-    text_response = f"Compendium Entry: {name} (Category: {category})\nDescription: {description}"
-    
-    locations = entry.get('locations')
-    if isinstance(locations, list) and locations:
-        text_response += f"\nCommon Locations: {', '.join(locations)}"
-        
-    drops = entry.get('drops')
-    if isinstance(drops, list) and drops:
-        text_response += f"\nDrops: {', '.join(drops)}"
-        
-    properties = entry.get('properties')
-    if isinstance(properties, dict) and properties:
-        props_str = ", ".join([f"{key.replace('_', ' ').title()}: {value}" for key, value in properties.items()])
-        text_response += f"\nProperties: {props_str}"
-
-    # *** NEW: Combine text and image URL into a single string with a special delimiter ***
-    if image_url:
-        return f"{text_response}|||IMAGE_URL:{image_url}"
-    else:
-        return text_response
-
-# --- Main Execution Block (for setup and testing) ---
-if __name__ == '__main__':
-    print("--- Testing Compendium Manager ---")
-    
-    compendium = CompendiumManager()
-
-    if compendium.all_entries_df is not None:
-        query = "bokoblin"
-        print(f"\n--- Searching for: '{query}' ---")
-        found_entry = compendium.find_entry(query)
-        
-        print("\n--- Formatted Agent Response (with hidden URL) ---")
-        formatted_response = format_entry_for_agent(found_entry)
-        print(formatted_response)
-    else:
-        print("\nTesting aborted as no data was loaded.")
+    return {"description": description, "image_url": image_url}
